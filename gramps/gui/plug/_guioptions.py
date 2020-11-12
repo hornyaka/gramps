@@ -8,6 +8,7 @@
 # Copyright (C) 2010       Jakim Friant
 # Copyright (C) 2011       Adam Stein <adam@csh.rit.edu>
 # Copyright (C) 2011-2013  Paul Franklin
+# Contributor   2020       Attila Hornyak-Sebestyen <attila@hornyak.hu>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -61,6 +62,7 @@ from gramps.gen.display.place import displayer as _pd
 from gramps.gen.filters import GenericFilterFactory, GenericFilter, rules
 from gramps.gen.constfunc import get_curr_dir
 from gramps.gen.const import GRAMPS_LOCALE as glocale
+from gramps.gen.utils.db import get_birth_or_fallback
 _ = glocale.translation.gettext
 
 #------------------------------------------------------------------------
@@ -164,6 +166,110 @@ class LastNameDialog(ManagedWindow):
     def build_menu_names(self, obj):
         return (_('Select surname'), None)
 
+#------------------------------------------------------------------------
+#
+# Dialog window used to select a birth place
+#
+#------------------------------------------------------------------------
+class BPlaceDialog(ManagedWindow):
+    """
+    A dialog that allows the selection of a places from the database.
+    """
+    def __init__(self, database, uistate, track, places, skip_list=set()):
+
+        ManagedWindow.__init__(self, uistate, track, self, modal=True)
+        flags = Gtk.DialogFlags.MODAL | Gtk.DialogFlags.DESTROY_WITH_PARENT
+        buttons = (_('_Cancel'), Gtk.ResponseType.REJECT,
+                   _('_OK'), Gtk.ResponseType.ACCEPT)
+
+
+        self.__dlg = Gtk.Dialog(None, uistate.window, flags, buttons)
+        self.set_window(self.__dlg, None, _('Select birth place'))
+        self.setup_configs('interface.bplacedialog', 400, 400)
+
+         # build up a container to display all of the places of interest
+        self.__model = Gtk.ListStore(GObject.TYPE_STRING, GObject.TYPE_INT)
+        self.__tree_view = Gtk.TreeView(self.__model)
+
+        col1 = Gtk.TreeViewColumn(_('Birth place'), Gtk.CellRendererText(), text=0)
+        col2 = Gtk.TreeViewColumn(_('Count'), Gtk.CellRendererText(), text=1)
+        col1.set_resizable(True)
+        col2.set_resizable(True)
+        col1.set_sizing(Gtk.TreeViewColumnSizing.AUTOSIZE)
+        col2.set_sizing(Gtk.TreeViewColumnSizing.AUTOSIZE)
+        col1.set_sort_column_id(0)
+        col2.set_sort_column_id(1)
+        self.__tree_view.append_column(col1)
+        self.__tree_view.append_column(col2)
+        scrolled_window = Gtk.ScrolledWindow()
+        scrolled_window.add(self.__tree_view)
+        scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC,
+                                   Gtk.PolicyType.AUTOMATIC)
+        scrolled_window.set_shadow_type(Gtk.ShadowType.OUT)
+        self.__dlg.vbox.pack_start(scrolled_window, True, True, 0)
+        self.show()
+
+        if len(places) == 0:
+
+            progress = ProgressMeter(
+                _('Finding Birth Places'), parent=uistate.window)
+            progress.set_pass(_('Finding Birth Places'),
+                              database.get_number_of_people())
+            for person in database.iter_people():
+                progress.step()
+                bth_event = get_birth_or_fallback(database, person)
+                birthplace = None
+                if bth_event:
+                    birthplace = bth_event.get_place_handle()
+                    if birthplace:
+                       place = database.get_place_from_handle(birthplace)
+                       key = _pd.display(database, place)
+                       count = 0
+                       if key in places:
+                           count = places[key]
+                       places[key] = count + 1
+            progress.close()
+
+
+        # insert the names and count into the model
+        for key in places:
+            if key.encode('iso-8859-1', 'xmlcharrefreplace') not in skip_list:
+                self.__model.append([key, places[key]])
+
+        # keep the list sorted starting with the most popular place names
+        # (but after sorting the whole list alphabetically first, so
+        # that places with the same number of places will be alphabetical)
+        self.__model.set_sort_column_id(0, Gtk.SortType.ASCENDING)
+        self.__model.set_sort_column_id(1, Gtk.SortType.DESCENDING)
+
+        # the "OK" button should be enabled/disabled based on the selection of
+        # a row
+        self.__tree_selection = self.__tree_view.get_selection()
+        self.__tree_selection.set_mode(Gtk.SelectionMode.MULTIPLE)
+        self.__tree_selection.select_path(0)
+
+    def run(self):
+        """
+        Display the dialog and return the selected places when done.
+        """
+        response = self.__dlg.run()
+        place_set = set()
+        if response == Gtk.ResponseType.ACCEPT:
+            (mode, paths) = self.__tree_selection.get_selected_rows()
+            for path in paths:
+                tree_iter = self.__model.get_iter(path)
+                place = self.__model.get_value(tree_iter, 0)
+                place_set.add(place)
+        if response != Gtk.ResponseType.DELETE_EVENT:
+            # ManagedWindow: set the parent dialog to be modal again
+            self.close()
+        return place_set
+
+    def build_menu_names(self, obj):
+        return (_('Select birth places'), None)
+
+  
+    
 #-------------------------------------------------------------------------
 #
 # GuiStringOption class
@@ -1666,6 +1772,204 @@ class GuiSurnameColorOption(Gtk.Box):
         self.__option.disconnect(self.valuekey)
         self.__option = None
 
+        
+#-------------------------------------------------------------------------
+#
+# GuiBPlaceColorOption class
+#
+#-------------------------------------------------------------------------
+class GuiBPlaceColorOption(Gtk.Box):
+    """
+    This class displays a widget that allows multiple places to be
+    selected from the database, and to assign a colour (not necessarily
+    unique) to each one.
+    """
+    def __init__(self, option, dbstate, uistate, track, override):
+        """
+        @param option: The option to display.
+        @type option: gen.plug.menu.BPlaceColorOption
+        @return: nothing
+        """
+        Gtk.Box.__init__(self)
+        self.__option = option
+        self.__dbstate = dbstate
+        self.__db = dbstate.get_database()
+        self.__uistate = uistate
+        self.__track = track
+        item = uistate.gwm.get_item_from_track(track)
+        self.__parent = item[0].window if isinstance(item, list) \
+            else item.window
+
+        self.set_size_request(150, 150)
+
+        # This will get populated the first time the dialog is run,
+        # and used each time after.
+        self.__places = {}  # list of places and count
+
+        self.__model = Gtk.ListStore(GObject.TYPE_STRING, GObject.TYPE_STRING)
+        self.__tree_view = Gtk.TreeView(model=self.__model)
+        self.__tree_view.connect('row-activated', self.__row_clicked)
+        col1 = Gtk.TreeViewColumn(_('Birth place'), Gtk.CellRendererText(), text=0)
+        col2 = Gtk.TreeViewColumn(_('Color'), Gtk.CellRendererText(), text=1)
+        col1.set_resizable(True)
+        col2.set_resizable(True)
+        col1.set_sort_column_id(0)
+        col1.set_sizing(Gtk.TreeViewColumnSizing.AUTOSIZE)
+        col2.set_sizing(Gtk.TreeViewColumnSizing.AUTOSIZE)
+        self.__tree_view.append_column(col1)
+        self.__tree_view.append_column(col2)
+        self.scrolled_window = Gtk.ScrolledWindow()
+        self.scrolled_window.add(self.__tree_view)
+        self.scrolled_window.set_policy(Gtk.PolicyType.AUTOMATIC,
+                                        Gtk.PolicyType.AUTOMATIC)
+        self.scrolled_window.set_shadow_type(Gtk.ShadowType.OUT)
+        self.pack_start(self.scrolled_window, True, True, 0)
+
+        self.add_place = widgets.SimpleButton('list-add',
+                                                self.__add_clicked)
+        self.del_place = widgets.SimpleButton('list-remove',
+                                                self.__del_clicked)
+        self.vbbox = Gtk.ButtonBox(orientation=Gtk.Orientation.VERTICAL)
+        self.vbbox.add(self.add_place)
+        self.vbbox.add(self.del_place)
+        self.vbbox.set_layout(Gtk.ButtonBoxStyle.SPREAD)
+        self.pack_end(self.vbbox, False, False, 0)
+
+        self.__value_changed()
+
+        self.valuekey = self.__option.connect('value-changed',
+                                              self.__value_changed)
+
+        self.__tree_view.set_tooltip_text(self.__option.get_help())
+
+    def __add_clicked(self, obj): # IGNORE:W0613 - obj is unused
+        """
+        Handle the add place button.
+        """
+        skip_list = set()
+        tree_iter = self.__model.get_iter_first()
+        while tree_iter:
+            place = self.__model.get_value(tree_iter, 0)
+            skip_list.add(place.encode('iso-8859-1', 'xmlcharrefreplace'))
+            tree_iter = self.__model.iter_next(tree_iter)
+
+        ln_dialog = BPlaceDialog(self.__db, self.__uistate,
+                                              self.__track, self.__places, skip_list)
+        place_set = ln_dialog.run()
+        for place in place_set:
+            self.__model.append([place, '#ffffff'])
+        self.__update_value()
+
+    def __del_clicked(self, obj): # IGNORE:W0613 - obj is unused
+        """
+        Handle the delete place button.
+        """
+        (path, column) = self.__tree_view.get_cursor()
+        if path:
+            tree_iter = self.__model.get_iter(path)
+            self.__model.remove(tree_iter)
+            self.__update_value()
+
+    def __row_clicked(self, treeview, path, column):
+        """
+        Handle the case of a row being clicked on.
+        """
+        # get the place and colour value for this family
+        tree_iter = self.__model.get_iter(path)
+        place = self.__model.get_value(tree_iter, 0)
+        rgba = Gdk.RGBA()
+        rgba.parse(self.__model.get_value(tree_iter, 1))
+
+        title = _('Select color for %s') % place
+        colour_dialog = Gtk.ColorChooserDialog(title=title,
+                                               transient_for=self.__parent)
+        colour_dialog.set_rgba(rgba)
+        response = colour_dialog.run()
+
+        if response == Gtk.ResponseType.OK:
+            rgba = colour_dialog.get_rgba()
+            colour_name = '#%02x%02x%02x' % (int(rgba.red * 255),
+                                             int(rgba.green * 255),
+                                             int(rgba.blue * 255))
+            self.__model.set_value(tree_iter, 1, colour_name)
+
+        colour_dialog.destroy()
+        self.__update_value()
+
+    def __update_value(self):
+        """
+        Parse the object and return.
+        """
+        place_colours = ''
+        tree_iter = self.__model.get_iter_first()
+        while tree_iter:
+            place = self.__model.get_value(tree_iter, 0)
+            #place = place.encode('iso-8859-1', 'xmlcharrefreplace')
+            colour = self.__model.get_value(tree_iter, 1)
+            # Tried to use a dictionary, and tried to save it as a tuple,
+            # but couldn't get this to work right -- this is lame, but now
+            # the places and colours are saved as a plain text string
+            #
+            # Hmmm...putting whitespace between the fields causes
+            # problems when the place has whitespace -- for example,
+            # with places like "Del Monte".  So now we insert a non-
+            # whitespace character which is unlikely to appear in
+            # a place.  (See bug report #2162.)
+            place_colours += place + '\xb0' + colour + '\xb0'
+            tree_iter = self.__model.iter_next(tree_iter)
+        self.__option.set_value(place_colours)
+
+    def __value_changed(self):
+        """
+        Handle the change made programmatically
+        """
+        value = self.__option.get_value()
+
+        if not isinstance(value, str):
+            # Convert dictionary into a string
+            # (convienence so that programmers can
+            # set value using a dictionary)
+            value_str = ""
+
+            for name in value:
+                value_str += "%s\xb0%s\xb0" % (name, value[name])
+
+            value = value_str
+
+            # Need to change __option value to be the string
+
+            self.__option.disable_signals()
+            self.__option.set_value(value)
+            self.__option.enable_signals()
+
+        # Remove all entries (the new values will REPLACE
+        # rather than APPEND)
+        self.__model.clear()
+
+        # populate the place/colour treeview
+        #
+        # For versions prior to 3.0.2, the fields were delimited with
+        # whitespace.  However, this causes problems when the place
+        # also has a space within it.  When populating the control,
+        # support both the new and old format -- look for the \xb0
+        # delimiter, and if it isn't there, assume this is the old-
+        # style space-delimited format.  (Bug #2162.)
+        if value.find('\xb0') >= 0:
+            tmp = value.split('\xb0')
+        else:
+            tmp = value.split(' ')
+        while len(tmp) > 1:
+            place = tmp.pop(0)
+            colour = tmp.pop(0)
+            self.__model.append([place, colour])
+
+    def clean_up(self):
+        """
+        remove stuff that blocks garbage collection
+        """
+        self.__option.disconnect(self.valuekey)
+        self.__option = None
+        
 #-------------------------------------------------------------------------
 #
 # GuiDestinationOption class
@@ -1968,6 +2272,7 @@ _OPTIONS = (
     (menu.StringOption, True, GuiStringOption),
     (menu.StyleOption, True, GuiStyleOption),
     (menu.SurnameColorOption, True, GuiSurnameColorOption),
+    (menu.BPlaceColorOption, True, GuiBPlaceColorOption),
     (menu.TextOption, True, GuiTextOption),
 
     # This entry must be last!
