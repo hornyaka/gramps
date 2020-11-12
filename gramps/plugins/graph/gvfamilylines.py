@@ -7,6 +7,7 @@
 # Contribution 2009 by     Bob Ham <rah@bash.sh>
 # Copyright (C) 2010       Jakim Friant
 # Copyright (C) 2011-2014  Paul Franklin
+# Contributor   2020       Attila Hornyak-Sebestyen <attila@hornyak.hu>
 #
 # This program is free software; you can redistribute it and/or modify
 # it under the terms of the GNU General Public License as published by
@@ -59,11 +60,12 @@ from gramps.gen.plug.report import MenuReportOptions
 from gramps.gen.plug.report import stdoptions
 from gramps.gen.plug.menu import (NumberOption, ColorOption, BooleanOption,
                                   EnumeratedListOption, PersonListOption,
-                                  SurnameColorOption)
+                                  SurnameColorOption, BPlaceColorOption)
 from gramps.gen.utils.db import get_birth_or_fallback, get_death_or_fallback
 from gramps.gen.utils.location import get_main_location
 from gramps.gen.proxy import CacheProxyDb
 from gramps.gen.errors import ReportError
+from gramps.gen.display.place import displayer as _pd
 
 #------------------------------------------------------------------------
 #
@@ -272,6 +274,15 @@ class FamilyLinesOptions(MenuReportOptions):
         surname_color.set_help(_('Colors to use for various family lines.'))
         add_option('surnamecolors', surname_color)
 
+        
+        # ----------------------------
+        add_option = partial(menu.add_option, _('Place Colors'))
+        # ----------------------------
+
+        place_color = BPlaceColorOption(_('Place colors'))
+        place_color.set_help(_('Colors to use for various birth places.'))
+        add_option('placecolors', place_color)
+        
         # -------------------------
         add_option = partial(menu.add_option, _('Individuals'))
         # -------------------------
@@ -826,9 +837,15 @@ class FamilyLinesReport(Report):
             # get birth place (one of:  hamlet, village, town, city, parish,
             # county, province, region, state or country)
             birthplace = None
+            birth_place = None
             if bth_event and self._incplaces:
                 birthplace = self.get_event_place(bth_event)
+                birth_place = birthplace.encode('iso-8859-1', 'xmlcharrefreplace')
 
+            # see if we have birthplace colours that match this person
+            if birth_place in self._placecolors:
+                colour = self._placecolors[birth_place]
+                
             # see if we have a deceased date we can use
             death_str = None
             if dth_event and self._incdates:
@@ -892,16 +909,18 @@ class FamilyLinesReport(Report):
                     label += '%s' % death_str
                 label += ')'
             if birthplace or deathplace:
-                if birthplace == deathplace:
-                    deathplace = None    # no need to print the same name twice
+#                if birthplace == deathplace:
+#                    deathplace = None    # no need to print the same name twice
                 label += '%s' % line_delimiter
                 if birthplace:
                     label += '%s' % birthplace
                 if birthplace and deathplace:
-                    label += ' / '
+                    label += ' - '
                 if deathplace:
                     label += '%s' % deathplace
-
+                else:
+                    label += ' - '
+                    
             # see if we have a table that needs to be terminated
             if image_path:
                 label += '</TD></TR></TABLE>'
