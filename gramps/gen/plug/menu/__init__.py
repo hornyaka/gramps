@@ -38,6 +38,7 @@ from ._media import MediaOption
 from ._personlist import PersonListOption
 from ._placelist import PlaceListOption
 from ._surnamecolor import SurnameColorOption
+from ._bplacecolor import BPlaceColorOption
 from ._destination import DestinationOption
 from ._style import StyleOption
 from ._booleanlist import BooleanListOption
