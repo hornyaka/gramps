@@ -439,6 +439,23 @@ class FamilyLinesReport(Report):
             self._surnamecolors[surname] = colour
 
         self._colorize = get_value('color')
+        
+        # convert the 'placecolors' string to a dictionary of names and colors
+        self._placecolors = {}
+        tmp = get_value('placecolors')
+        if tmp.find('\xb0') >= 0:
+            # new style delimiter (see bug report #2162)
+            tmp = tmp.split('\xb0')
+        else:
+            # old style delimiter
+            tmp = tmp.split(' ')
+
+        while len(tmp) > 1:
+            place = tmp.pop(0).encode('iso-8859-1', 'xmlcharrefreplace')
+            colour = tmp.pop(0)
+            self._placecolors[place] = colour
+
+        self._colorize = get_value('color')
 
     def begin_report(self):
         """
