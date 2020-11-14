@@ -931,6 +931,9 @@ class FamilyLinesReport(Report):
                 label += '%s' % line_delimiter
                 if birthplace:
                     label += '%s' % birthplace
+                else:
+                    if deathplace:
+                         label += '- '
                 if birthplace and deathplace:
                     label += ' - '
                 if deathplace:
